@@ -55,6 +55,10 @@ Arduino_ESP32SPI *bus = new Arduino_ESP32SPI(TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI,
 Arduino_GFX *gfx = new Arduino_GC9A01(bus, TFT_RES, 0 /* rotation */, true /* IPS */);
 bool first=1;
 
+int lastEncoderValue = 0;
+unsigned long lastVolumeChange = 0;
+const unsigned long VOLUME_STABILITY_TIMEOUT = 150; //ms
+
 void setup(void)
 {
   Serial.begin(115200); 
@@ -195,10 +199,20 @@ void draw() {
 }
 
 void readEncoder() {
-  if (rotaryManager.hasValueChanged()) {
+  if (rotaryManager.hasValueChanged()) {    
     angle = rotaryManager.readValue();
+    lastEncoderValue = angle;
+    draw();
+
+    // reset stability timer
+    lastVolumeChange = millis();
+  }
+
+  // only send api request after a brief pause in encoder movement
+  // and only if the value is different from what was last sent
+  if ((millis() - lastVolumeChange > VOLUME_STABILITY_TIMEOUT) && 
+     (angle*2 != volumeController.getLastSentVolume())) {
     volumeController.setVolume(angle*2);
-    draw();        
   }
 }
 
@@ -226,7 +240,9 @@ void resetVOL() {
 }
 
 void loop() {
+
   readEncoder();
+
   if (read_touch(&xt, &yt) == 1) {
     if(deb==0) {
       deb=1;

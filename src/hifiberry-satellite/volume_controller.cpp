@@ -72,6 +72,8 @@ bool VolumeController::setVolume(int volume) {
         String response = http.getString();
         Serial.println("Response: " + response);
         
+        lastSentVolume = volume;
+
         http.end();
         return true;
     } else {
