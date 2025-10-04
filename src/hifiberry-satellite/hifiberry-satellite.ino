@@ -10,12 +10,11 @@
 #include "fatFont.h"
 #include "middleFont.h"
 #include <TFT_eSPI.h>
-#include "volume_controller.h"
+#include <Arduino_JSON.h>
 
 ConfigManager configManager;
 WiFiManager wifiManager;
 RotaryManager rotaryManager;
-VolumeController volumeController;
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite sprite = TFT_eSprite(&tft);
@@ -39,6 +38,23 @@ TFT_eSprite sprite = TFT_eSprite(&tft);
 
 #define COLOR_NUM 5
 
+// Level from 0-4
+#define ASYNC_HTTP_DEBUG_PORT     Serial
+#define _ASYNC_HTTP_LOGLEVEL_     4
+
+#define ASYNC_HTTP_REQUEST_GENERIC_VERSION_MIN_TARGET      "AsyncHTTPRequest_Generic v1.10.2"
+#define ASYNC_HTTP_REQUEST_GENERIC_VERSION_MIN             1010002
+
+// Seconds for timeout, default is 3s
+#define DEFAULT_RX_TIMEOUT           10
+
+// Uncomment for certain HTTP site to optimize
+//#define NOT_SEND_HEADER_AFTER_CONNECTED        true
+
+// To be included only in main(), .ino with setup() to avoid `Multiple Definitions` Linker Error
+#include <AsyncHTTPRequest_Generic.h>             // https://github.com/khoih-prog/AsyncHTTPRequest_Generic
+AsyncHTTPRequest request;
+
 int ColorArray[COLOR_NUM] = {WHITE, BLUE, GREEN, RED, YELLOW};
 unsigned short grays[13];
 int chosen=0;
@@ -57,7 +73,66 @@ bool first=1;
 
 int lastEncoderValue = 0;
 unsigned long lastVolumeChange = 0;
-const unsigned long VOLUME_STABILITY_TIMEOUT = 150; //ms
+const unsigned long VOLUME_STABILITY_TIMEOUT = 500; //ms
+int lastSentVolume = -1;
+
+void sendSetVolumeRequest(int volume)
+{
+  static bool requestOpenResult;
+
+  if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected - cannot send set volume request");
+        return;
+  }
+
+  if (lastSentVolume != volume && (request.readyState() == readyStateUnsent || request.readyState() == readyStateDone))
+  {
+    requestOpenResult = request.open("POST", "http://hbamp60.local:81/api/volume");
+
+    if (requestOpenResult)
+    {
+      // Only send() if open() returns true, or crash
+
+      
+      JSONVar payload;
+      payload["percent"] = String(volume);
+      String jsonString = JSON.stringify(payload);
+      
+      Serial.print("Sending payload: ");
+      Serial.println(jsonString);
+      
+      request.setReqHeader("Content-Type", "application/json");    
+      request.send(jsonString);
+      lastSentVolume = volume;
+    }
+    else
+    {
+      Serial.println(F("Can't send bad request"));
+    }
+  }
+  else
+  {
+    Serial.println(F("Can't send request"));
+  }
+}
+
+void requestCallback(void *optParm, AsyncHTTPRequest *request, int readyState)
+{
+  (void) optParm;
+
+  if (readyState == readyStateDone)
+  {
+    AHTTP_LOGDEBUG(F("\n**************************************"));
+    AHTTP_LOGDEBUG1(F("Response Code = "), request->responseHTTPString());
+
+    if (request->responseHTTPcode() == 200)
+    {
+      Serial.println(F("\n**************************************"));
+      Serial.println(request->responseText());
+      Serial.println(F("**************************************"));
+    }
+  }
+}
 
 void setup(void)
 {
@@ -85,11 +160,15 @@ void setup(void)
     delay(1000);
     wifiManager.begin(ssid, password, hostname);
 
+    // Configure Async HTTP Requester
+    request.setDebug(false);
+    request.onReadyStateChange(requestCallback);
+  
     // Initialize rotary encoder
     rotaryManager.begin();
 
     // Initialize volume controller
-    volumeController.begin(apiUrl);
+    //volumeController.begin(apiUrl);
     
     Wire.begin(TOUCH_SDA, TOUCH_SCL);
     delay(1000);
@@ -109,9 +188,7 @@ void setup(void)
      grays[i]=tft.color565(co, co, co);
      co=co-20;
      }
-     draw();
-
- 
+     draw(); 
 }
 
 void draw() {
@@ -203,16 +280,15 @@ void readEncoder() {
     angle = rotaryManager.readValue();
     lastEncoderValue = angle;
     draw();
-
-    // reset stability timer
-    lastVolumeChange = millis();
+    
   }
 
   // only send api request after a brief pause in encoder movement
   // and only if the value is different from what was last sent
-  if ((millis() - lastVolumeChange > VOLUME_STABILITY_TIMEOUT) && 
-     (angle*2 != volumeController.getLastSentVolume())) {
-    volumeController.setVolume(angle*2);
+  if ((millis() - lastVolumeChange > VOLUME_STABILITY_TIMEOUT)) {
+      // reset stability timer
+      lastVolumeChange = millis();
+      sendSetVolumeRequest(angle*2);      
   }
 }
 
